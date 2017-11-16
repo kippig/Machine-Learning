@@ -1,0 +1,537 @@
+---
+title: "Lab 4: Reducing Crime"
+subtitle: "w203: Statistics for Data Science"
+author: "Cyprian, Sohag, and Zhaoning"
+date: "August 15, 2017"
+output:
+  pdf_document: default
+  html_document: default
+  word_document: default
+---
+
+# 1. Introduction
+
+For this project, we are presented with a dataset of crime statistics for a selection of counties which are contained in the file `crime_v2.csv`. Our task is to examine the data, to help understand the determinants of crime and to generate policy suggestions that are applicable to local government. 
+
+In order to accomplish this, we will first perform an exploratory data analysis. Secondly, we will develop  three linear models. One model, our base model, will include key explanatory variables. The second model will add covariates that we believe will increase the accuracy of our results without introducing bias. The third model will include most of the remaining covariates. We will test the third model to determine if our base model is robust.
+
+Finally, we will present our results in the form of a regression table, a discussion of causality and high-level takeaways.
+
+```{r setup, include=FALSE}
+# set figure size in the output
+knitr::opts_chunk$set(fig.width=6, fig.height=4, echo = TRUE)
+# Set the working directory
+#setwd("C:/Users/382024/Desktop/data_w203/lab_4")
+
+library(effsize)
+library(car)
+library(stargazer)
+library(ggplot2)
+library(lmtest)
+library(sandwich)
+
+```
+
+# 2. Exploratory Data Analysis
+
+While performing the initial data analysis, we notice the following by examining the histogram
+for tax: 
+
+```{r}
+rm(list=ls())   # clean up work space
+alldata = read.csv("crime_v2.csv") # read data from CSV file
+summary(alldata) # take a summary of the complete data set
+hist(alldata$crime, xlab="Crime Rate", main=paste("Histogram of", "Crime Rate"))
+hist(alldata$tax, xlab="Taxes", main=paste("Histogram of", "Taxes")) # plot histogram of taxes
+```
+
+## High-Level Observations
+
+1. We notice the `crime` is a number between 0.01 and 0.1 and it has a positive skew. 
+2. We see a outlier for the `tax` variable, which upon examining the data, is from the 25th row. 
+3. We see no missing values.
+4. We see no top-coded or bottom-coded variables.
+
+## Variable analysis
+
+
+1 county: This is a number that identifies each county. We will not use this variable for prediction analysis.
+
+2 year 1988: This is another useless variable as far as analysis goes. 1988 was a good year however.
+
+3 crime: crimes committed per person. 
+
+4 probarr: The probability of a given person of being arrested provided they are chosen uniformly randomly.
+
+5 probconv: The probability of a given person being convicted given that they have already been arrested.
+
+6 probsen: Probability' of a prison sentence given that a person has already been convicted.
+
+7 avgsen: average sentence, days
+
+8 police: police per capita
+
+9 density: people per square mile
+
+10 tax: tax revenue per capita
+
+11 west : An indicator variable that is 1 if a county is in western part of the state
+
+12 central: An indicator variable that is 1 if a county  in central part of the state
+
+13 urban: An indicator variable that is 1 if a county is in Standard Metropolitan Statistical Area
+
+14 pctmin: The proportion of the population that is minority or nonwhite.
+
+15 wagecon weekly wage, construction
+
+16 wagetuc weekly wage, transportation, utilities, communications
+
+17 wagetrd weekly wage, wholesle, retail trade
+
+18 wagefir weekly wage, finance, insurance and real estate
+
+19 wageser weekly wage, service industry
+
+20 wagemfg weekly wage, manufacturing
+
+21 wagefed weekly wage, federal employees
+
+22 wagesta weekly wage, state employees
+
+23 wageloc weekly wage, local government employees
+
+24 mix ratio of face to face/all other crimes
+
+25 ymale proportion of county males between the ages of 15 and 24
+
+
+## Conclusions based on High-Level Observations
+
+We will Use `10000*crime` as a variable, as this will have the interpretation of crime rate per 10000 people population and will result in numbers in the range 10 to 100.  
+
+We will remove row 25 from original dataset, as it has: 
+     + An unusually high influence.
+     + It has the highest tax, but it is not urban.
+     + We thus conclude that it is likely to be a small rural town and thus the impact of removal is minimal. It is very important to note that our dataset is given by counties and not by population as such very small counties can have drastic effects
+     
+```{r}
+examplemodel <- lm(alldata$crime*10000 ~ alldata$density + alldata$police + alldata$tax + alldata$pctmin + alldata$ymale + alldata$wagemfg)
+plot(examplemodel, which = 5)
+```
+
+As we can see in this sample model, line 25 is egregious and thus we feel justified in removing it. We keep line 51 because in our final model it does not have Cook's distance > 1 whereas line 25 remains problematic. 
+
+We will scale other variables in the model accordingly. Mostly this means we will be changing our percents into a larger scale so that we can more easily tell the difference as the ranges for some of our variables is rather small.
+
+## Variable Transformations
+
+We create new columns in the data frame - this will make subsequent code cleaner.
+
+- `conviction = probconv * probarr`: this variable is the product of the probability of arrest and 
+the probability of conviction (given arrest). By the rule of conditional probability it represents the probability of a given resident to be convicted. 
+
+- `minority = 100 * pctmin`: since `pctmin` is the percentage of the county population that is 
+minority, this variable represents the number of minorities per 10,000 population. 
+
+- `ymale100 = 100 * ymale`: this variable represents the number of young males per 10,000 population.
+
+- `crime10000 = 10000 * crime`: this variable represents the crimes per 10,000 population. 
+
+- `logcrime10000 = log(crime*10000)`: this variable is the natural log of the previous variable. 
+
+`crime10000` and `logcrime10000` are the response variables. We will develop models using both these variables and select the best variable to use as an outcome variable between the two depending on the fit.
+
+The following code implements the above:
+```{r}
+rm(list=ls())   # clean up work space
+alldata = read.csv("crime_v2.csv")
+
+crdata <- alldata[-25,]  # remove the row with very high tax
+
+crdata$conviction <- crdata$probconv*crdata$probarr*100
+crdata$minority <- 100*crdata$pctmin
+crdata$ymale100 <- 100*crdata$ymale
+crdata$crime10000 <- 10000*crdata$crime
+crdata$logcrime10000 <- log(crdata$crime10000)
+```
+
+We notice the `crime10000` has positive skew. Using the `log(crime10000)` helps with normality and with heteroskedasticity. Additionally, it will give slope coefficients a nice "percentage change" interpretation.
+
+```{r}
+hist(crdata$crime10000, breaks=10)
+```
+
+```{r}
+hist(crdata$logcrime10000, breaks=10)
+```
+
+
+# Model Building Process
+
+## Model 1: Population Effect Model
+
+Our first model will focus on the population. First, we examine the correlation between variables related to the population, demographics, police presence and tax revenue.
+
+```{r}
+# correlation matrix of a subset
+POP = data.matrix(subset(crdata, select=c("crime", "density","ymale100","minority", "police", "tax")))
+round(cor(POP),2)
+```
+
+Based on the high correlation values with crime, it seems `density` (.77), `ymale100` (.31), `minority` (.22) at least should be included in our base model. We will not include `tax` (.38) because the coefficients are not significant at all (code not shown for brevity). 
+
+As mentioned in the previous section, we will create two models: `m1a` and `m1b` using `crime10000` and `logcrime10000` respectively, and compare these models. 
+
+```{r}
+m1a <- lm(crime10000 ~ density + ymale100 + minority, data = crdata)
+coeftest(m1a, vcov = vcovHC)
+op=par(mfrow=c(2,2))
+for(i in c(1,2,3,5))plot(m1a, which=i)
+par(op)
+```
+We see that coefficients for all three variables have very good statistical significance. Strong practical significance also exists for the density and young male data. Interestingly enough the minority variable has minor practical significance. From the Residual vs Fitted  plot we see that the zero conditional mean assumption is met. Our normality assumption is mostly met in the QQ plot. The scale-location plot has reasonable heteroskedasticity. 
+
+```{r}
+m1b <- lm(logcrime10000 ~ density + ymale100 + minority, data = crdata)
+coeftest(m1b, vcov = vcovHC)
+op=par(mfrow=c(2,2))
+for(i in c(1,2,3,5))plot(m1b, which=i)
+par(op)
+```
+All of our coefficients in this model have very good statistical significance. Similarly in this model, minority is not practically significant. From the residuals vs fitted plot  we see that  the zero conditional mean assumption is met within reason. The QQ plot on this model as opposed to the previous model is nearly perfect. This is the main advantage of the taking the log of crime to get a normal distribution of crime data. The scale-location  plot shows  a very solid heteroskedasticity requirement. In this model we have the advantage that our cooks distance is less than 1 for every point. Point 59 is still an outlier, however it has a low residual so we are not particularly worried by it.
+
+In summary: 
+
+1. Data point 59 has Cook's distance between 0.5 and 1.0 for `m1a`. 
+
+2. Based on the residuals versus fitted plot, we see that `m1a` has a better zero conditional mean attribute.
+
+3. Based on the Q-Q plot, we see `m1b` has better normality.
+
+4. Based on the Scale-Location plot, `m1b` has better heteroskedasticity.
+
+Since we are in the business of giving political advice, we want to give policy advice that is race blind. We further justify this by the fact that minority is not practically significant in either m1a or the m2a model. So we build another more parsimonious model without `minority`:
+
+```{r}
+m1c <- lm(logcrime10000 ~ density + ymale100 , data = crdata)
+coeftest(m1c, vcov = vcovHC)
+op=par(mfrow=c(2,2))
+for(i in c(1,2,3,5))plot(m1c, which=i)
+par(op)
+```
+As expected here, our coefficients are statistically and practically significant. Additionally we meet the zero conditional mean requirement. Our normal requirement is nearly perfectly met. Heteroskedasticity is not violated, which is great! Finally, we don't have any influential points. This is of course expected because our prior two models are extremely similar to this one.
+
+Now we compare all three models, using heteroskedasticity-robust standard errors:
+```{r, results='asis', warning=FALSE}
+seh.m1a = sqrt(diag(vcovHC(m1a)))
+seh.m1b = sqrt(diag(vcovHC(m1b)))
+seh.m1c = sqrt(diag(vcovHC(m1c)))
+
+stargazer(m1a, m1b, m1c,  type = "latex", 
+          se = list(seh.m1a, seh.m1b, seh.m1c),
+          title = "Linear Models Crimes",
+          omit.stat = c("f", "ser"),
+          star.cutoffs = c(0.05,0.01,0.001))
+```
+
+m1a AIC = `r format(AIC(m1a), digits = 5)`
+
+m1b AIC = `r format(AIC(m1b), digits = 5)`
+
+m1c AIC = `r format(AIC(m1c), digits = 5)`
+
+We notice that:
+
+1. The AIC score for `m1a` is highest.
+
+2. The AIC score is lowest for `m1b`. 
+
+3. The coefficient for `minority` is extremely small (0.032 and 0.0001 respectively for
+the model using `crime10000` and `logcrime10000`).`minority` appears to be statistically significant, but it is practically insignificant.
+
+For these reasons we decide to pick `m1b` as our model1 (`m1`).
+
+**Model `m1`**
+$$log(10000crime) = \beta_0 + \beta_1 density + \beta_2 ymale100 + \beta_3 minority$$
+
+```{r}
+m1 <- m1b # assign m1b as our model
+```
+
+## Model 2:  Crime Deterrence Model
+
+For the second model, we will check the variables that are supposed to be deterrent to crimes. As before, first, we check the correlation matrix for these variables:
+
+```{r}
+# correlation matrix of a subset
+X= data.matrix(subset(crdata, select=c("crime", "probarr","probconv","probsen","avgsen", "police","mix", "conviction")))
+round(cor(X),2)
+```
+
+Based on the correlations, we conclude that `conviction`, `probconv`, `probsen` and `police` are the variables of interest. `conviction`, `probconv`, `probsen` have high negative correlation with `crime`, (-0.32, -0.40 and -0.37 respectively), while `police` has a high positive correlation with `crime` (0.11). 
+
+This can be explained by the fact that high rates of convictions, arrests and high chance of being sentenced deter crime, while police presence may be increased in areas of high crime, thus positively correlating with crime rates.
+
+We will add these variables to our base model `m1`, one at a time and in combination. Again, we use `crime10000` and `logcrime10000` as our response variables and compare:
+
+```{r}
+m2a <- lm(crime10000 ~ density + ymale100 + minority + conviction, data=crdata)
+m2b <- lm(crime10000 ~ density + ymale100 + minority + probsen, data=crdata)
+m2c <- lm(crime10000 ~ density + ymale100 + minority + probsen + police, data=crdata)
+m2d <- lm(crime10000 ~ density + ymale100 + minority + probconv + probsen + police, data=crdata)
+
+m2e <- lm(logcrime10000 ~ density + ymale100 + minority + conviction, data = crdata)
+m2f <- lm(logcrime10000 ~ density + ymale100 + minority + probsen, data = crdata)
+m2g <- lm(logcrime10000 ~ density + ymale100 + minority + probsen + police, data = crdata)
+m2h <- lm(logcrime10000 ~ density + ymale100 + minority + probconv + probsen + police, data = crdata)
+```
+
+AIC(m2a) = `r format(AIC(m2a), digits = 5)`
+
+AIC(m2b) = `r format(AIC(m2b), digits = 5)`
+
+AIC(m2c) = `r format(AIC(m2c), digits = 5)`
+
+AIC(m2d) = `r format(AIC(m2d), digits = 5)`
+
+AIC(m2e) = `r format(AIC(m2e), digits = 5)`
+
+AIC(m2f) = `r format(AIC(m2f), digits = 5)`
+
+AIC(m2g) = `r format(AIC(m2g), digits = 5)`
+
+AIC(m2h) = `r format(AIC(m2h), digits = 5)`
+
+Based on the AIC scores, We think `m2b` and `m2h` are the best. We will use m2h because we want logcrime10000 due to the normality of the data.
+
+Let's check the validity of assumptions:
+
+```{r}
+coeftest(m2b, vcov = vcovHC)
+op=par(mfrow=c(2,2))
+for(i in c(1,2,3,5))plot(m2b, which=i)
+par(op)
+```
+Our coefficients here are statistically significant. Apart from minority they are also practically significant. The zero conditional mean assumption is met. Our QQ plot shows us that normality isn't perfect but we see that it is mostly solid. The red line in the Scale-Location plot may indicate to somebody that the heteroskedasticity assumption was not met. However, we observe that at the locations along the red line in which it diverges from the center there are remarkable few points. Therefore we consider that this assumption is acceptable. No point has Cook's distance greater than 1 so we are good there.
+
+```{r}
+op=par(mfrow=c(2,2))
+for(i in c(1,2,3,5))plot(m2h, which=i)
+par(op)
+```
+We see here that most of our coefficients are statistically significant. Ymale100 is no longer statistically significant which indicates to us that probconv, probsen, police or a combination is somewhat colinear with Ymale100. We meet our zero conditional mean assumption as per the residual-fitted plot. The QQ plot show us also that we are mostly normal. We do have a bit of extreme behavior on either end but it is relegated to only a few points. All of our points have Cook's distance far smaller than 1. As such, we need not worry about outliers giving our model inaccuracies.
+
+Again, comparing the graphs and applying all the CLM assumptions, the model using `logcrime10000` as outcome variable has better zero conditional mean, normality and heteroskedasticity (`m2h`).
+
+## Joint Significance:
+
+We also check the joint significance of `probconv`, `probsen`, `police` with different combinations.
+
+We also try to compare the restricted model which excludes `police` with the 
+model that includes all the deterrent variables.
+
+In the following table various linear hypothesis tests are run with their associated -values. 
+
+```{r}
+# combination                | p-values
+#-----------------------------------------
+# probconv + probsen + police| 0.00000018
+# probconv + probsen         | 0.01
+# probconv           + police| 0.038
+#            probsen + police| 0.0097
+# probconv                   | 0.000661
+#            probsen         | 0.00134
+#                      police| 0.9
+
+mdeter <- lm(logcrime10000 ~ density + ymale100 + minority + probconv + probsen + police, data = crdata)
+coeftest(mdeter , vcov = vcovHC)  # p-value the same as linearHypothesis when testing only one variable
+linearHypothesis(mdeter, c("police=0"), data=crdata, vcov=vcovHC)
+```
+
+Since `police` is a response variable that has some of the causal effects (higher crime rate) might be obscured. However, since the police variable is so reliable here we cannot justify excluding it from our model. 
+
+**Model `m2`**
+
+$$log(10000crime) = \beta_0 + \beta_1 density + \beta_2 ymale100 + \beta_3 minority +\beta_4 probsen $$
+We assign `m2h` as our model2 (`m2`):
+
+```{r}
+m2 <- m2h
+```
+
+## Model 3: Wage Effect on Crime
+
+For the third model, we will check the variables that are are related to wages and assess their impact on the crime rate. As before, first, we check the correlation matrix for these variables:
+
+```{r}
+# correlation matrix of a subset
+W= data.matrix(subset(crdata, select=c("crime", "tax", "density",
+                                       "wagecon", "wagetuc", "wagetrd", "wagefir", "wageser",
+                                       "wagemfg", "wagefed", "wagesta", "wageloc")))
+round(cor(W),2)
+```
+Next, we develop the model using all the wage variables added to the base model, run a coefficient  test to check for statistical significance, and run a linear hypothesis test to check for  comparison with the restricted model (`m2`) which excludes all the wage related variables.
+
+```{r}
+mec <- lm(logcrime10000 ~ density + ymale100 + minority + probsen + tax
+            + wagecon + wagetuc + wagetrd + wagefir + wageser + wagemfg
+          + wagefed + wagesta + wageloc,
+          data = crdata)
+coeftest(mec , vcov = vcovHC)  # p-value the same as linearHypothesis when testing only one variable
+linearHypothesis(mec, c("wagecon=0", "wagetuc=0", "wagetrd=0", "wagefir=0", "wageser=0", "wagemfg=0"), data=crdata, vcov=vcovHC) 
+```
+AIC(m2h) = `r format(AIC(m2h), digits = 5)`
+AIC(mec) = `r format(AIC(mec), digits = 5)`
+
+The model which includes the wages has a much higher AIC score. We are not particularly interested in this model as a result.
+
+Now we will be parsimonious and figure out which of the wage variables is significant. We suspect `wagefed` due to its high correlation with `crime`. 
+
+We create three candidate models for our third model:
+
+1. One is simply `m2`
+2. One is `m2` with `wagefed`
+3. One is `m2` with all the wage related variables
+
+```{r}
+m3a <- lm(logcrime10000 ~ density + ymale100 + minority + probsen, data = crdata)
+m3b <- lm(logcrime10000 ~ density + ymale100 + minority + probsen + wagefed , data = crdata)
+m3c <- lm(logcrime10000 ~ density + ymale100 + minority + probsen + tax
+            + wagecon + wagetuc + wagetrd + wagefir + wageser + wagemfg
+          + wagefed + wagesta + wageloc,
+          data = crdata)
+```
+
+
+```{r, results='asis', warning=FALSE}
+seh.m3a = sqrt(diag(vcovHC(m3a)))
+seh.m3b = sqrt(diag(vcovHC(m3b)))
+seh.m3c = sqrt(diag(vcovHC(m3c)))
+
+stargazer(m3a, m3b, m3c, type = "latex", 
+          se = list(seh.m3a, seh.m3b, seh.m3c),
+          title = "Linear Models Crimes",
+          omit.stat = c("f", "ser"),
+          star.cutoffs = c(0.05,0.01,0.001))
+```
+
+
+AIC(m3a) = `r format(AIC(m3a), digits = 5)`
+
+AIC(m3b) = `r format(AIC(m3b), digits = 5)`
+
+AIC(m3c) = `r format(AIC(m3c), digits = 5)`
+
+We will talk about our AIC after checking the CLM assumptions of this model.
+
+**Model `m3`**
+
+$$log(1000crime) = \beta_0 + \beta_1 density + \beta_2 ymale100 + \beta_3 minority +\beta_4 probsen +\beta_5 wagefed$$
+We assign `m3b` as our model3 (`m3`):
+
+```{r}
+m3 <- m3b
+coeftest(m3, vcov = vcovHC)
+op=par(mfrow=c(2,2))
+for(i in c(1,2,3,5))plot(m3, which=i)
+par(op)
+
+```
+This model is very good when it comes to assumptions. We see that all our variables are highly statistically significant. However, minority and wagefed are not very practically significant. Wagefed being not practically significant makes this model not particularly interesting as we were measuring the effect of this wage in the first place. We see that the zero-conditional mean, heterskedasticity, normality assumptions are all met. Additionally, no point has a Cook's distance greater than 1. Therefore overall this is a good model, but it does lack the explanatory power it set out to have.
+
+**Conclusion**
+
+`m3b` has the lowest AIC score and is therefore the best of the models that takes into account wage related variables. However, since m2h is a stronger model overall, we will tend to use that for our policy suggestions.
+
+## Model of all variables.
+
+In the construction of our model that includes all variables we must take note of the existence of 3 categorical variables: urban, central and west. Since they are categorical and overlap we must create interaction terms for them. Every combinatorial possibility must be taken into account so our model has 7 variables for all the combinations. Some of these combinations do not have values and some only have 1. This causes a leverage error that R takes care of nicely. We decided not to edit our data since R has accommodations for this situation.
+
+```{r}
+#4 model
+totalmodel <- lm(logcrime10000 ~ density + conviction*probsen + avgsen + police + ymale + tax + minority + urban*west*central + urban*west + urban*central + west*central + urban + west + central + wagecon + wagefed + wagefir + wageloc + wagemfg + wageser + wagesta + wagetrd + wagetuc + mix, data = crdata)
+op=par(mfrow=c(2,2))
+for(i in c(1,2,3,5))plot(totalmodel, which=i)
+par(op)
+
+```
+BIC(total model) = `r format(BIC(totalmodel), digits = 5)`
+
+BIC(m2h) = `r format(BIC(m2h), digits = 5)`
+
+AIC(total model) = `r format(AIC(totalmodel), digits = 5)`
+
+AIC(m2h) = `r format(AIC(m2h), digits = 5)`
+The zero-conditional mean and heteroskedasticity assumptions are nearly perfect on this model. The QQ plot shows us that normality is met, albeit not perfectly. However, in the residual-leverage plot we see that some points have Cook's distance that is greater than 1. We hope we can do better than this and we notice that our model of choice `m2h` does better in both BIC and AIC categories. Thus we can disregard model 4 and feel confident that model `m2h` has made us less wrong than if we had blindly stuffed all the variables in a hat.
+
+# Model Comparison
+
+Finally, we have our three models, let us compare their standard errors:
+
+```{r, results='asis', warning=FALSE}
+# heteoskedasticity-robust standard errors
+seh.m1 = sqrt(diag(vcovHC(m1)))
+seh.m2 = sqrt(diag(vcovHC(m2)))
+seh.m3 = sqrt(diag(vcovHC(m3)))
+
+stargazer(m1, m2, m3,  type = "latex", 
+          se = list(seh.m1, seh.m2, seh.m3),
+          title = "Linear Models Crimes",
+          omit.stat = c("f", "ser"),
+          star.cutoffs = c(0.05,0.01,0.001))
+```
+
+AIC(m1) = `r format(AIC(m1), digits = 5)`
+
+AIC(m2) = `r format(AIC(m2), digits = 5)`
+
+AIC(m3) = `r format(AIC(m3), digits = 5)`
+
+BIC(m1) = `r format(BIC(m1), digits = 5)`
+
+BIC(m2) = `r format(BIC(m2), digits = 5)`
+
+BIC(m3) = `r format(BIC(m3), digits = 5)`
+
+**Conclusion**
+
+1. `m2` has the lowest AIC and BIC scores.
+2. `wagefed` and `minority` have high statistical significance, but due to their extreme low
+coefficient values, may have low practical significance. 
+
+# Causality
+
+The following variables were not considered as dependent variables:
+
+- `X1`, `county`, `year`: as these are identifying variables and irrelevant to causality
+- region: `west`, `central`, `urban` as we felt that `density` captured the correlation with 
+crime rate adequately. High density implied urban areas, low density rural areas. We wanted to 
+determine the effect of population density on crime rather than region. 
+- `mix`: as this seemed to be uncorrelated to crime.
+
+Our hypothesis is that crime rate is positively related to 
+
+- Population density: a higher crime rate is prevalent in urban centers.
+
+- Higher proportion of young males: young males are more likely to commit crimes.
+
+- Higher proportion of minorities: high minority presence is correlated with crimes.
+
+- Higher federal wages: we could not account for this effect.
+
+and is negatively correlated with: 
+
+- Higher likelihood of being sentenced: if a person is arrested, convicted and sentenced, it has a deterrent effect on crime
+
+A surprising conclusion we came to is that police presence is positively correlated with crime rate. At first glance this appears counter-intuitive. One would think that a greater police presence would result in less crime. However, we can explain this apparent paradox with the fact that police presence may in fact be a secondary outcome variable. More crime in an area will result in  greater police presence.
+
+Other wages may give us a good picture. We found them uncompelling for the reason that we don't know about the population of these counties not the percentage of population in each industry. This could cause any number of effects since the underlying distribution and population is completely unknown. In fact it could be as drastic that all we are measuring is noise while the wage-population distribution explains everything. While this is unlikely, our lack of data here is concerning.
+
+## Policy Suggestion
+
+
+Our final model 'm2' suggests the following behavior. Since Conviction rates and prison rates are correlation and perhaps cause lower crime rates we encourage local governments to divert more money to the courts and investigators. Additionally, since a higher police presence is a causing factor for crime, we see that these counties can consider redirecting money from active police officers to investigators and courts. Additionally, in an attempt to raise conviction and prison rates we recommend increasing the penalty for crimes as a deterrent to these crimes. Of course every county is different and needs to take into account it's own situation so our advice should not be blindly followed.
+
+Since young males and very loosely minorities are correlated with crime we suggest the governments take action to reduce crime in these demographics in particular. We recommend a focus on education and community outreach .
+
