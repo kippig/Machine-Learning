@@ -1,0 +1,21 @@
+# So far I haven't been using spark-submit for this, but rather just working in the shell
+# Enter pyspark shell with two cores
+MASTER=local[2] /data/spark15/bin/pyspark
+
+# Import python and spark libraries
+from pyspark import SparkContext
+from pyspark.streaming import StreamingContext
+import json
+
+# Set up the streaming context and point it to a local folder
+ssc = StreamingContext(sc, 1)
+lines = ssc.textFileStream("file:///tmp/datastreams")
+
+# Load the json files and return the Flight Tracks subobject
+flight_tracks = lines.map(lambda x: [j['flightTracks'][0] for j in json.loads('['+x+']')])
+
+# Currently this is only able to peel off the very first flightID from the
+# flight_tracks RDD object and then print
+
+flight_ids = flight_tracks.map(lambda tracks: tracks[0][0])
+flight_ids.count().pprint()

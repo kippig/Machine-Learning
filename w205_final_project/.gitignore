@@ -1,0 +1,9 @@
+*.DS_Store
+Historical/csv/*
+*.dly
+Historical/Processed_Flight_Data/*
+Historical/Historical Weather data/Data/*
+Historical/Final_historical_data.csv
+.ipynb_checkpoints
+*/.ipynb_checkpoints
+*/.ipynb_checkpoints/*
